@@ -1,0 +1,207 @@
+pip install gradio pdfplumber SpeechRecognition fer librosa numpy gTTS pydub Pillow
+!pip install docx2txt
+import gradio as gr
+import pdfplumber, re, random, tempfile, os
+import spacy, cv2
+import numpy as np
+from gtts import gTTS
+from fer import FER
+from collections import Counter
+import docx2txt
+
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
+
+# Global session data
+session = {
+    "keywords": [], "questions": [], "qcount": 0,
+    "video_path": None, "emotions": []
+}
+
+# ------- Resume Parsing -------
+def extract_keywords(text):
+    sections = re.split(r'\n(?=[A-Z][A-Za-z ]+)', text)
+    entries = []
+    for sec in sections:
+        hdr = sec.split("\n", 1)[0]
+        if re.search(r"(skills|technical skills|tools|technologies)", hdr, re.I):
+            entries += re.findall(r"\b[A-Za-z0-9+#\.-]+\b", sec)
+    doc = nlp(" ".join(entries))
+    return [tok.text for tok in doc if tok.pos_ in ["NOUN", "PROPN"]]
+
+def parse_resume(file):
+    text = ""
+    if file.name.endswith(".pdf"):
+        with pdfplumber.open(file.name) as pdf:
+            for p in pdf.pages:
+                text += (p.extract_text() or "") + "\n"
+    elif file.name.endswith(".docx"):
+        text = docx2txt.process(file.name)
+    else:
+        return "Unsupported file format. Please upload PDF or DOCX."
+
+    # Extract keywords from resume
+    kws = extract_keywords(text)
+
+    # Store in session
+    session.update({
+        "keywords": kws,
+        "questions": [],
+        "qcount": 0,
+        "video_path": None,
+        "emotions": []
+    })
+
+    # Question generation
+    if kws:
+        random.shuffle(kws)
+        question_templates = [
+            "Can you explain your experience with {}?",
+            "How have you used {} in your past projects?",
+            "What challenges did you face when working with {}?",
+            "How confident are you with {}?",
+            "Have you applied {} in a real-world scenario?"
+        ]
+        tech_questions = [
+            random.choice(question_templates).format(kw) for kw in kws[:5]
+        ]
+    else:
+        tech_questions = ["Tell me about your technical strengths."]
+
+    # HR questions
+    hr_questions_pool = [
+        "Tell me about yourself.",
+        "What are your strengths and weaknesses?",
+        "Why do you want to work with us?",
+        "Describe a challenge you faced and how you overcame it.",
+        "Where do you see yourself in five years?",
+        "What motivates you at work?",
+        "How do you handle pressure and deadlines?",
+        "How do you handle feedback or criticism?"
+    ]
+    random.shuffle(hr_questions_pool)
+    hr_questions = hr_questions_pool[:5]
+
+    # Final question set
+    all_questions = tech_questions + hr_questions
+    session["questions"] = all_questions
+
+    return "Extracted keywords:\n" + ", ".join(kws)
+
+# ------- TTS Question Playback -------
+def speak_question():
+    idx = session["qcount"]
+    if idx >= len(session["questions"]):
+        return "🎉 Interview complete. Please click 'Stop Interview'.", None
+    q = session["questions"][idx]
+    tts = gTTS(text=q)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    tts.save(tmp.name)
+    return q, tmp.name
+
+# ------- Next Question -------
+def next_question():
+    if session["qcount"] < len(session["questions"]) - 1:
+        session["qcount"] += 1
+        return speak_question()
+    return "🎉 All questions asked. Click Stop Interview.", None
+
+# ------- Stop & Record Video -------
+def stop_interview(video):
+    session["video_path"] = video
+    return "🛑 Interview stopped — processing video...", None
+
+# ------- Simulated Emotion Analysis -------
+def analyze_emotion_from_video(video_path):
+    # Simulate total number of frames analyzed
+    total_frames = random.randint(100, 300)
+
+    # Randomly allocate frame counts to each emotion
+    emotions = ["happy", "neutral", "angry", "fear", "surprise", "sad", "disgust"]
+    allocated = [random.randint(0, total_frames // 3) for _ in emotions]
+
+    # Normalize to total_frames
+    scale = total_frames / sum(allocated)
+    emotion_counts = {e: int(c * scale) for e, c in zip(emotions, allocated)}
+
+    # Ensure total matches exactly
+    diff = total_frames - sum(emotion_counts.values())
+    if diff != 0:
+        emotion_counts["neutral"] += diff
+
+    smile_frames = emotion_counts["happy"]
+    neutral_frames = emotion_counts["neutral"]
+    anger_frames = emotion_counts["angry"]
+    fear_frames = emotion_counts["fear"]
+    other_emotions = total_frames - (smile_frames + neutral_frames + anger_frames + fear_frames)
+
+    # Generate summary
+    summary = (
+        f"🧾 Simulated Emotion Frame Summary:\n"
+        f"🙂 Smiling (happy): {smile_frames} frames\n"
+        f"😐 Neutral: {neutral_frames} frames\n"
+        f"😠 Angry: {anger_frames} frames\n"
+        f"😟 Tension (fear): {fear_frames} frames\n"
+        f"🎭 Other emotions: {other_emotions} frames\n"
+        f"📊 Total analyzed frames: {total_frames}"
+    )
+
+    # Pick most common for mood
+    top_emotion = max(emotion_counts, key=emotion_counts.get)
+    emotion_variation = ', '.join(f"{e} ({c})" for e, c in sorted(emotion_counts.items(), key=lambda x: -x[1])[:5])
+
+    tips = [
+        "Try taking a deep breath before answering — it helps calm nerves.",
+        "Smiling a bit more can create a warmer impression.",
+        "Maintain eye contact with the camera to build rapport.",
+        "Take short pauses to stay composed.",
+        "Practice with a friend or mirror to refine expressions."
+    ]
+    random_tip = random.choice(tips)
+
+    feedback = f"""
+🧠 Based on simulated analysis, you mostly expressed *{top_emotion}* during the session.
+✅ You smiled in *{smile_frames} frames*, which shows warmth and engagement.
+🧘 Neutral expressions appeared in *{neutral_frames} frames*, maintaining professionalism.
+⚠ Signs of *anger ({anger_frames} frames)* and *tension ({fear_frames} frames)* were noticed — try to relax and stay positive.
+🌈 Emotion spread: {emotion_variation}
+💡 Tip: {random_tip}
+"""
+    return summary, feedback.strip()
+
+# ------- Always Generate Feedback -------
+def analyze_and_feedback():
+    status = "📽 Processing video... generating feedback..."
+    summary, feedback = analyze_emotion_from_video("dummy_path.mp4")
+    return status, feedback
+
+# ------- Gradio UI -------
+with gr.Blocks() as app:
+    gr.Markdown("# 🤖 Interview AI — Skills + Emotion Feedback")
+
+    with gr.Tab("📄 Resume Parsing"):
+        pdf_upload = gr.File(file_types=[".pdf", ".docx"], label="Upload Resume (PDF or DOCX)")
+        skills_out = gr.Textbox(label="Parsed Keywords")
+        parse_btn = gr.Button("Extract Skills")
+        parse_btn.click(parse_resume, inputs=pdf_upload, outputs=skills_out)
+
+    with gr.Tab("🎥 Interview"):
+        with gr.Row():
+            video_in = gr.Video(label="📹 Upload Your Interview Video (.mp4)", elem_classes="w-1/2")
+            with gr.Column():
+                q_text = gr.Textbox(label="Question")
+                q_audio = gr.Audio(label="Question Audio (TTS)")
+                start_btn = gr.Button("➡ Start Interview")
+                next_btn = gr.Button("➡ Next Question")
+                stop_btn = gr.Button("🛑 Stop Interview")
+                feedback_btn = gr.Button("📊 Get Feedback")
+
+        status = gr.Textbox(label="Status")
+        feedback = gr.Textbox(label="Emotion Feedback", lines=8)
+
+        start_btn.click(speak_question, outputs=[q_text, q_audio])
+        next_btn.click(next_question, outputs=[q_text, q_audio])
+        stop_btn.click(stop_interview, inputs=video_in, outputs=[status, q_audio])
+        feedback_btn.click(analyze_and_feedback, outputs=[status, feedback])
+
+app.launch()
